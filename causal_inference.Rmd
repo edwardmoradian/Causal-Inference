@@ -1,0 +1,268 @@
+---
+title: "Causal Inference"
+description: "Code from Coursera course title A Crash Course in Causality: Inferring Causal Effects from Observational Data"
+output: html_notebook
+tests: "Compare with presentation course for values/conclusions"
+---
+
+
+```{r}
+# install packages
+# install.packages("tableone")
+# install.packages("Matching")
+# install.packages("labelled")
+# install.packages("MatchIt")
+```
+
+```{r}
+#load packages
+library(tableone)
+library(Matching)
+library(labelled)
+library(MatchIt)
+```
+
+```{r}
+# read in data, right heart catheterization
+# load(url("http://biostat.mc.vanderbilt.edu/wiki/pub/Main/DataSets/rhc.sav"))
+rhc <- read.csv('rhc.csv')
+# view data
+View(rhc)
+```
+
+```{r}
+# order(colnames(rhc))
+```
+
+```{r}
+# treatment variables is swang1 as treatment var
+# response is died either 0 or 1
+# x variables that we will use
+# cat1: primary disease category
+# age
+# sex
+# meanbp1: mean blood pressure
+
+# create a data set with just these variables, for simplicity
+ARF<-as.numeric(rhc$cat1=='ARF')
+CHF<-as.numeric(rhc$cat1=='CHF')
+Cirr<-as.numeric(rhc$cat1=='Cirrhosis')
+colcan<-as.numeric(rhc$cat1=='Colon Cancer')
+Coma<-as.numeric(rhc$cat1=='Coma')
+COPD<-as.numeric(rhc$cat1=='COPD')
+lungcan<-as.numeric(rhc$cat1=='Lung Cancer')
+MOSF<-as.numeric(rhc$cat1=='MOSF w/Malignancy')
+sepsis<-as.numeric(rhc$cat1=='MOSF w/Sepsis')
+female<-as.numeric(rhc$sex=='Female')
+died<-as.numeric(rhc$death=='Yes')
+age<-rhc$age
+treatment<-as.numeric(rhc$swang1=='RHC')
+meanbp1<-rhc$meanbp1
+
+```
+
+```{r}
+dim(mydata[mydata$death==1])
+# dim(mydata)
+```
+
+```{r}
+#new dataset
+mydata<-cbind(ARF,CHF,Cirr,colcan,Coma,lungcan,MOSF,sepsis,
+              age,female,meanbp1,treatment,died)
+mydata<-data.frame(mydata)
+```
+
+```{r}
+#covariates we will use (shorter list than you would use in practice)
+xvars<-c("ARF","CHF","Cirr","colcan","Coma","lungcan","MOSF","sepsis",
+         "age","female","meanbp1")
+```
+
+```{r}
+#look at a table 1
+table1<- CreateTableOne(vars=xvars,strata="treatment", data=mydata, test=FALSE)
+## include standardized mean difference (SMD)
+# standardized mean difference = expresses the size of the intervention effect in each study
+# relative to the variability observed in the study.
+# SMD > .1 are important, covariates should be < .1
+print(table1,smd=TRUE)
+```
+
+############################################
+#do greedy matching on Mahalanobis distance
+############################################
+```{r}
+greedymatch<-Match(Tr=treatment,M=1,X=mydata[xvars],replace=FALSE)
+matched<-mydata[unlist(greedymatch[c("index.treated","index.control")]), ]
+```
+
+```{r}
+#get table 1 for matched data with standardized differences
+matchedtab1<-CreateTableOne(vars=xvars, strata ="treatment", 
+                            data=matched, test = FALSE)
+print(matchedtab1, smd = TRUE)
+```
+
+```{r}
+#outcome analysis
+y_trt<-matched$died[matched$treatment==1]
+y_con<-matched$died[matched$treatment==0]
+
+head(y_trt)
+```
+
+```{r}
+#pairwise difference
+diffy<-y_trt-y_con
+head(diffy)
+```
+
+```{r}
+# paired t-test for causal risk difference
+# Difference in probability of death if everyone received rhc versus if no one
+# received rhc is .054 (higher risk of death in rhc group)
+t.test(diffy)
+```
+
+```{r}
+# contingency table, concordant pairs: 973 pairs had an outcome of 1, 303 with outcome of 0
+# discordant pairs: 513 treated subj died when matched control did not
+# 513 more than 395 which suggests the treated are at higher risk
+table(y_trt,y_con)
+```
+
+```{r}
+# McNemar test confirms treated subj are higher risk of death (corroborates t-test)
+mcnemar.test(matrix(c(973,513,395,303),2,2))
+```
+
+##########################
+#propensity score matching
+#########################
+```{r}
+head(rhc$aps1)
+```
+
+```{r}
+# sort(colnames(mydata))
+sort(colnames(rhc))
+#new dataset
+aps <- rhc$aps1
+mydata_2<-cbind(ARF,aps,CHF,Cirr,colcan,Coma,lungcan,MOSF,sepsis,
+              age,female,meanbp1,treatment,died)
+```
+
+```{r}
+mydata_2<-data.frame(mydata_2)
+```
+
+```{r}
+#fit a propensity score model. logistic regression
+psmodel<-glm(treatment~ARF+CHF+Cirr+colcan+Coma+lungcan+MOSF+sepsis+age+female+meanbp1+aps,family=binomial(),data=mydata_2)
+```
+
+```{r}
+#show coefficients etc
+summary(psmodel)
+#create propensity score
+pscore<-psmodel$fitted.values
+```
+
+```{r}
+# Alternative: use matchit for propensity score, nearest neighbor matching
+m.out <- matchit(treatment~ARF+CHF+Cirr+colcan+Coma+lungcan+MOSF+sepsis+age+female+meanbp1+aps,data=mydata_2,method="nearest")
+summary(m.out)
+```
+
+```{r}
+# propensity score plots
+# no unmatched treated, matched distributions look similar because we matched
+# unmatched control were overrepresented
+# raw is before matching
+plot(m.out,type="jitter")
+plot(m.out,type="Hist")
+```
+
+```{r}
+#do greedy matching on logit(PS) using Match without a caliper
+
+logit <- function(p) {log(p)-log(1-p)}
+psmatch<-Match(Tr=mydata_2$treatment,M=1,X=logit(pscore),replace=FALSE)
+matched<-mydata_2[unlist(psmatch[c("index.treated","index.control")]), ]
+xvars<-c("ARF","CHF","Cirr","colcan","Coma","lungcan","MOSF","sepsis",
+         "age","female","meanbp1","aps")
+```
+
+```{r}
+colnames(mydata_2)
+```
+
+```{r}
+#get standardized differences, without a caliper
+matchedtab1<-CreateTableOne(vars=xvars, strata ="treatment", 
+                            data=matched, test = FALSE)
+print(matchedtab1, smd = TRUE)
+```
+
+```{r}
+#outcome analysis
+y_trt<-matched$died[matched$treatment==1]
+y_con<-matched$died[matched$treatment==0]
+```
+
+```{r}
+#pairwise difference
+diffy<-y_trt-y_con
+head(diffy)
+```
+
+```{r}
+#paired t-test
+t.test(diffy)
+```
+```{r}
+#do greedy matching on logit(PS) using Match with a caliper
+# .2 st dev units, .2*stdev(logit propensity score)
+logit <- function(p) {log(p)-log(1-p)}
+psmatch<-Match(Tr=mydata_2$treatment,M=1,X=logit(pscore),replace=FALSE,caliper=.2)
+matched<-mydata_2[unlist(psmatch[c("index.treated","index.control")]), ]
+xvars<-c("ARF","CHF","Cirr","colcan","Coma","lungcan","MOSF","sepsis",
+         "age","female","meanbp1","aps")
+```
+
+```{r}
+#get standardized differences, with a caliper
+matchedtab1<-CreateTableOne(vars=xvars, strata ="treatment", 
+                            data=matched, test = FALSE)
+print(matchedtab1, smd = TRUE)
+```
+
+```{r}
+#outcome analysis
+y_trt<-matched$died[matched$treatment==1]
+y_con<-matched$died[matched$treatment==0]
+```
+
+```{r}
+#pairwise difference
+diffy<-y_trt-y_con
+head(diffy)
+```
+
+```{r}
+# with caliper causal risk difference is .0231 (-.007, .05337)
+# paired t-test
+t.test(diffy)
+```
+
+
+
+
+
+
+
+
+
+
+
